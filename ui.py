@@ -5,7 +5,7 @@ from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
 
 from exporter import export_csv
-from scraper import scrape
+from scraper import scrape, start_driver, login, get_tahun_list, get_prodi_list
 
 
 # =============================
@@ -44,15 +44,55 @@ class ScraperUI:
         self.root.minsize(860, 600)
         self.root.configure(bg=BG)
 
+        self.tahun_data = []
+        self.prodi_data = []
+
+        self.last_selected_tahun = None
+        self.loading_prodi = False
         self.is_running = False
 
-        self.tahun_var = tk.StringVar(value="Tahun Akademik 2025/2026")
-        self.prodi_var = tk.StringVar(value="Informatika")
+        # ======================
+        # VARIABLE
+        # ======================
+        self.tahun_var = tk.StringVar(value="TAHUN AKADEMIK 2025/2026")
+        self.prodi_var = tk.StringVar(value="Teknik Informatika")
         self.status_var = tk.StringVar(value="READY")
         self.output_var = tk.StringVar(value=os.path.abspath(OUTPUT_FILE))
 
+        # ======================
+        # INIT UI
+        # ======================
         self._setup_style()
         self._build_layout()
+
+        # ======================
+        # DEFAULT DROPDOWN DATA (NO SELENIUM)
+        # ======================
+        self.tahun_dropdown["values"] = [
+            "TAHUN AKADEMIK 2025/2026",
+            "TAHUN AKADEMIK 2024/2025",
+        ]
+
+        self.prodi_dropdown["values"] = [
+            "Teknik Informatika",
+            "Sistem Informasi",
+            "Psikologi",
+            "Teknik Industri",
+            "Teknik Mesin",
+            "Manajemen",
+            "Akuntansi",
+            "Ilmu Hukum",
+            "Farmasi",
+            "Pendidikan Agama Islam",
+            "Pendidikan Pancasila dan Kewarganegaraan",
+            "Pendidikan Guru Sekolah Dasar",
+            "Manajemen S2",
+            "Pendidikan Profesi Guru",
+        ]
+
+        # ======================
+        # LOG
+        # ======================
         self._append_log("Sistem siap. Pilih Tahun Akademik dan Prodi lalu tekan START.")
         self._append_log("Tema dibuat dengan nuansa biru terang ala Persona 3 Reload.")
 
@@ -236,7 +276,7 @@ class ScraperUI:
             row=0,
             col=0,
             label="Tahun Akademik",
-            values=["Tahun Akademik 2025/2026", "Tahun Akademik 2024/2025"],
+            values=[],
             variable=self.tahun_var,
         )
         self._create_field(
@@ -244,7 +284,7 @@ class ScraperUI:
             row=0,
             col=1,
             label="Program Studi",
-            values=["Informatika", "Sistem Informasi", "Psikologi"],
+            values=[],
             variable=self.prodi_var,
         )
 
@@ -392,9 +432,18 @@ class ScraperUI:
 
     def _create_field(self, parent, row, col, label, values, variable):
         frame = tk.Frame(parent, bg=PANEL)
-        frame.grid(row=row, column=col, sticky="ew", padx=(0 if col == 0 else 8, 8 if col == 0 else 0), pady=(0, 8))
+        frame.grid(
+            row=row,
+            column=col,
+            sticky="ew",
+            padx=(0 if col == 0 else 8, 8 if col == 0 else 0),
+            pady=(0, 8)
+        )
         frame.grid_columnconfigure(0, weight=1)
 
+        # ======================
+        # LABEL
+        # ======================
         tk.Label(
             frame,
             text=label,
@@ -404,6 +453,9 @@ class ScraperUI:
             font=("Segoe UI Semibold", 10),
         ).grid(row=0, column=0, sticky="w", pady=(0, 6))
 
+        # ======================
+        # COMBOBOX
+        # ======================
         combo = ttk.Combobox(
             frame,
             textvariable=variable,
@@ -411,7 +463,23 @@ class ScraperUI:
             state="readonly",
             style="P3.TCombobox",
         )
-        combo.grid(row=1, column=0, sticky="ew")
+        combo.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+
+        # ======================
+        # ASSIGN DROPDOWN + EVENT
+        # ======================
+        if label == "Tahun Akademik":
+            self.tahun_dropdown = combo
+
+            # bind hanya sekali, aman dari loop
+            # combo.bind("<<ComboboxSelected>>", self._on_tahun_changed)
+
+        elif label == "Program Studi":
+            self.prodi_dropdown = combo
+
+        return combo
+
+
 
     def _info_row(self, parent, row, label, variable):
         tk.Label(
@@ -461,35 +529,85 @@ class ScraperUI:
         prodi = self.prodi_var.get().strip()
 
         if not tahun or not prodi:
-            messagebox.showwarning("Warning", "Pilih Tahun dan Prodi dulu!")
+            messagebox.showwarning("Warning", "Isi Tahun dan Prodi dulu!")
             return
 
         self._set_running(True)
         self._append_log("=" * 60)
         self._append_log(f"Mulai scraping: {tahun} | {prodi}")
-        self._append_log("Browser akan dibuka otomatis untuk login dan pengambilan data.")
+        self._append_log("Memulai browser...")
 
         def run_job():
             try:
-                data = scrape(tahun, prodi)
+                # ======================
+                # START DRIVER SEKALI SAJA
+                # ======================
+                driver, wait = start_driver()
+                login(driver, wait)
+
+                # ======================
+                # AMBIL TAHUN
+                # ======================
+                self.root.after(0, lambda: self._append_log("Mengambil data tahun..."))
+                tahun_list = get_tahun_list(driver, wait)
+
+                tahun_obj = next(
+                    (t for t in tahun_list if tahun.lower() in t["nama"].lower()),
+                    None
+                )
+
+                if not tahun_obj:
+                    raise Exception("Tahun tidak ditemukan")
+
+                # ======================
+                # AMBIL PRODI
+                # ======================
+                self.root.after(0, lambda: self._append_log("Mengambil data prodi..."))
+                prodi_list = get_prodi_list(driver, wait, tahun_obj["url"])
+
+                prodi_obj = next(
+                    (p for p in prodi_list if prodi.lower() in p["nama"].lower()),
+                    None
+                )
+
+                if not prodi_obj:
+                    raise Exception("Prodi tidak ditemukan")
+
+                # ======================
+                # SCRAPING UTAMA
+                # ======================
+                data = scrape(tahun_obj, prodi_obj, driver, wait)
+
                 export_csv(data, OUTPUT_FILE)
 
-                def on_success():
-                    self._append_log(f"Selesai. Total data terkumpul: {len(data)} baris.")
-                    self._append_log(f"File tersimpan di: {os.path.abspath(OUTPUT_FILE)}")
-                    self._set_running(False)
-                    messagebox.showinfo("Sukses", f"Scraping selesai.\n\nOutput:\n{os.path.abspath(OUTPUT_FILE)}")
+                driver.quit()
 
-                self.root.after(0, on_success)
+                # ======================
+                # SUCCESS
+                # ======================
+                self.root.after(0, lambda: self._append_log(f"Selesai. Total data: {len(data)}"))
+
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Sukses",
+                    f"Data berhasil disimpan\n{os.path.abspath(OUTPUT_FILE)}"
+                ))
+
             except Exception as e:
-                def on_error():
-                    self._append_log(f"Error: {e}")
-                    self._set_running(False)
-                    messagebox.showerror("Error", str(e))
+                self.root.after(0, lambda e=e: self._handle_error(e))
 
-                self.root.after(0, on_error)
+            finally:
+                self.is_running = False
+                self.root.after(0, lambda: self._set_running(False))
 
         threading.Thread(target=run_job, daemon=True).start()
+
+    
+    # handle error
+
+    def _handle_error(self, e):
+        self._append_log(f"Error: {e}")
+        self._set_running(False)
+        messagebox.showerror("Error", str(e))
 
 
 def run_app():

@@ -41,7 +41,10 @@ def login(driver, wait):
 
 
 
-def get_tahun_list(driver):
+def get_tahun_list(driver, wait):
+    driver.get("https://elearning.ubpkarawang.ac.id/course")
+    wait.until(EC.presence_of_element_located((By.ID, "page-content")))
+
     elements = driver.find_elements(By.XPATH, "//a[contains(@href,'categoryid=')]")
 
     data = []
@@ -49,11 +52,65 @@ def get_tahun_list(driver):
         nama = el.text.strip()
         url = el.get_attribute("href")
 
-        if "tahun akademik" in nama.lower():
-            data.append({"nama": nama, "url": url})
+        # filter valid
+        if nama and "tahun akademik" in nama.lower():
+            data.append({
+                "nama": nama,
+                "url": url
+            })
 
-    return data
+    # ======================
+    # HAPUS DUPLIKAT
+    # ======================
+    unique = {}
+    for item in data:
+        unique[item["nama"]] = item
 
+    return list(unique.values())
+
+def get_prodi_list(driver, wait, tahun_url):
+    driver.get(tahun_url)
+    wait.until(EC.presence_of_element_located((By.ID, "page-content")))
+
+    elements = driver.find_elements(
+        By.XPATH, "//a[contains(@href,'categoryid=')]"
+    )
+
+    data = []
+
+    for el in elements:
+        nama = el.text.strip()
+        url = el.get_attribute("href")
+
+        # ======================
+        # FILTER VALID
+        # ======================
+        if (
+            nama
+            and "semester" not in nama.lower()
+            and "tahun akademik" not in nama.lower()
+            and "perkuliahan" not in nama.lower()
+        ):
+            data.append({
+                "nama": nama,
+                "url": url
+            })
+
+    # ======================
+    # HAPUS DUPLIKAT
+    # ======================
+    unique = {}
+    for item in data:
+        unique[item["nama"]] = item
+
+    prodi_list = list(unique.values())
+
+    # ======================
+    # SORT (OPSIONAL BIAR RAPI)
+    # ======================
+    prodi_list.sort(key=lambda x: x["nama"])
+
+    return prodi_list
 
 
 def normalize_space(text):
@@ -307,159 +364,144 @@ def extract_dosen_names_from_course_page(driver, wait):
 
 
 
-def scrape(tahun_target, prodi_target):
-    driver, wait = start_driver()
+def scrape(tahun_obj, prodi_obj, driver, wait):
     results = []
 
     try:
-        login(driver, wait)
-
+        # ======================
+        # MASUK HALAMAN COURSE
+        # ======================
         driver.get(f"{BASE_URL}/course")
         wait.until(EC.presence_of_element_located((By.ID, "page-content")))
 
         # ======================
-        # TAHUN
+        # MASUK TAHUN
         # ======================
-        tahun_data = get_tahun_list(driver)
+        driver.get(tahun_obj["url"])
+        wait.until(EC.presence_of_element_located((By.ID, "page-content")))
+        time.sleep(2)
 
-        tahun_filtered = [
-            t for t in tahun_data if tahun_target.lower() in t["nama"].lower()
-        ]
+        # ======================
+        # MASUK PRODI
+        # ======================
+        driver.get(prodi_obj["url"])
+        wait.until(EC.presence_of_element_located((By.ID, "page-content")))
+        time.sleep(2)
 
-        if not tahun_filtered:
-            print("Tahun tidak ditemukan:", tahun_target)
-            return []
+        # ======================
+        # SEMESTER
+        # ======================
+        semester_elements = driver.find_elements(
+            By.XPATH, "//a[contains(@href,'categoryid=')]"
+        )
 
-        for tahun in tahun_filtered:
-            driver.get(tahun["url"])
+        semester_data = []
+        for el in semester_elements:
+            nama = normalize_space(el.text)
+            url = el.get_attribute("href")
+
+            if "semester" in nama.lower():
+                semester_data.append({
+                    "nama": nama,
+                    "url": url
+                })
+
+        # ======================
+        # LOOP SEMESTER
+        # ======================
+        for semester in semester_data:
+            driver.get(semester["url"])
             wait.until(EC.presence_of_element_located((By.ID, "page-content")))
             time.sleep(2)
 
             # ======================
-            # PRODI
+            # AMBIL COURSE
             # ======================
-            prodi_elements = driver.find_elements(By.XPATH, "//a[contains(@href,'categoryid=')]")
+            courses = extract_courses_from_semester_page(driver, wait)
+            print(f"\n[{semester['nama']}] total course:", len(courses))
 
-            prodi_data = []
-            for el in prodi_elements:
-                nama = normalize_space(el.text)
-                url = el.get_attribute("href")
+            for course in courses:
+                driver.get(course["url"])
 
-                if nama and "semester" not in nama.lower():
-                    prodi_data.append({"nama": nama, "url": url})
+                wait.until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, "#region-main, .course-content")
+                    )
+                )
 
-            print("\nDaftar Prodi:")
-            for p in prodi_data:
-                print("-", p["nama"])
+                if "course/view.php" not in driver.current_url:
+                    continue
 
-            prodi_filtered = [
-                p for p in prodi_data if prodi_target.lower() == p["nama"].lower()
-            ]
-
-            if not prodi_filtered:
-                prodi_filtered = [
-                    p for p in prodi_data if prodi_target.lower() in p["nama"].lower()
-                ]
-
-            if not prodi_filtered:
-                print("Prodi tidak ditemukan:", prodi_target)
-                return []
-
-            for prodi in prodi_filtered:
-                driver.get(prodi["url"])
-                wait.until(EC.presence_of_element_located((By.ID, "page-content")))
                 time.sleep(2)
 
                 # ======================
-                # SEMESTER
+                # DOSEN
                 # ======================
-                semester_elements = driver.find_elements(By.XPATH, "//a[contains(@href,'categoryid=')]")
+                dosen = course.get("dosen", "Tidak ditemukan")
 
-                semester_data = []
-                for el in semester_elements:
-                    nama = normalize_space(el.text)
-                    url = el.get_attribute("href")
+                if dosen == "Tidak ditemukan":
+                    fallback = extract_dosen_names_from_course_page(driver, wait)
+                    if fallback:
+                        dosen = ", ".join(fallback)
 
-                    if "semester" in nama.lower():
-                        semester_data.append({"nama": nama, "url": url})
+                # ======================
+                # SECTION & ACTIVITY
+                # ======================
+                sections = driver.find_elements(
+                    By.CSS_SELECTOR, "li.section.course-section"
+                )
 
-                for semester in semester_data:
-                    driver.get(semester["url"])
-                    wait.until(EC.presence_of_element_located((By.ID, "page-content")))
-                    time.sleep(2)
+                activities = driver.find_elements(
+                    By.CSS_SELECTOR, "li.activity"
+                )
 
-                    # ======================
-                    # COURSE + DOSEN DARI CARD SEMESTER
-                    # ======================
-                    courses = extract_courses_from_semester_page(driver, wait)
-                    print(f"\n[{semester['nama']}] total course terbaca:", len(courses))
+                counts = {
+                    "attendance": 0,
+                    "forum": 0,
+                    "quiz": 0,
+                    "assignment": 0,
+                    "label": 0,
+                    "file": 0,
+                    "link": 0,
+                }
 
-                    for course in courses:
-                        driver.get(course["url"])
+                for act in activities:
+                    cls = act.get_attribute("class") or ""
 
-                        wait.until(
-                            EC.presence_of_element_located(
-                                (By.CSS_SELECTOR, "#region-main, .course-content")
-                            )
-                        )
+                    if "modtype_attendance" in cls:
+                        counts["attendance"] += 1
+                    if "modtype_forum" in cls:
+                        counts["forum"] += 1
+                    if "modtype_quiz" in cls:
+                        counts["quiz"] += 1
+                    if "modtype_assign" in cls:
+                        counts["assignment"] += 1
+                    if "modtype_label" in cls:
+                        counts["label"] += 1
+                    if "modtype_resource" in cls:
+                        counts["file"] += 1
+                    if "modtype_url" in cls:
+                        counts["link"] += 1
 
-                        if "course/view.php" not in driver.current_url:
-                            continue
+                # ======================
+                # SIMPAN HASIL
+                # ======================
+                results.append([
+                    tahun_obj["nama"],
+                    prodi_obj["nama"],
+                    semester["nama"],
+                    course["nama"],
+                    dosen,
+                    len(sections),
+                    counts["attendance"],
+                    counts["forum"],
+                    counts["quiz"],
+                    counts["assignment"],
+                    counts["label"],
+                    counts["file"],
+                    counts["link"],
+                ])
 
-                        time.sleep(2)
-
-                        dosen = course["dosen"]
-                        if dosen == "Tidak ditemukan":
-                            fallback_names = extract_dosen_names_from_course_page(driver, wait)
-                            if fallback_names:
-                                dosen = ", ".join(fallback_names)
-
-                        sections = driver.find_elements(By.CSS_SELECTOR, "li.section.course-section")
-                        activities = driver.find_elements(By.CSS_SELECTOR, "li.activity")
-
-                        counts = {
-                            "attendance": 0,
-                            "forum": 0,
-                            "quiz": 0,
-                            "assignment": 0,
-                            "label": 0,
-                            "file": 0,
-                            "link": 0,
-                        }
-
-                        for act in activities:
-                            cls = act.get_attribute("class") or ""
-
-                            if "modtype_attendance" in cls:
-                                counts["attendance"] += 1
-                            if "modtype_forum" in cls:
-                                counts["forum"] += 1
-                            if "modtype_quiz" in cls:
-                                counts["quiz"] += 1
-                            if "modtype_assign" in cls:
-                                counts["assignment"] += 1
-                            if "modtype_label" in cls:
-                                counts["label"] += 1
-                            if "modtype_resource" in cls:
-                                counts["file"] += 1
-                            if "modtype_url" in cls:
-                                counts["link"] += 1
-
-                        results.append([
-                            tahun["nama"],
-                            prodi["nama"],
-                            semester["nama"],
-                            course["nama"],
-                            dosen,
-                            len(sections),
-                            counts["attendance"],
-                            counts["forum"],
-                            counts["quiz"],
-                            counts["assignment"],
-                            counts["label"],
-                            counts["file"],
-                            counts["link"],
-                        ])
     finally:
         driver.quit()
 
